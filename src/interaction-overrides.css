@@ -1,0 +1,2 @@
+.results-table tbody tr.row-clickable { cursor: pointer; }
+.results-table tbody tr:not(.row-clickable) { cursor: default; }

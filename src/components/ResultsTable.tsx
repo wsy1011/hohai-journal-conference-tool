@@ -1,0 +1,8 @@
+import type { CatalogItem } from "../data/catalog";
+
+type Props = { rows: { item: CatalogItem; relevance: { score: number; topics: string[] } }[]; yearColumns: string[]; columnLabels: Record<string, string>; onSelect: (item: CatalogItem) => void };
+function Grade({ value, special = false }: { value: string; special?: boolean }) { return value ? <span className={`grade-chip ${special ? "special" : ""}`}>{value}</span> : <span className="empty-grade">—</span>; }
+export function ResultsTable({ rows, yearColumns, columnLabels, onSelect }: Props) {
+  if (!rows.length) return <div className="empty-state"><strong>没有匹配条目</strong><span>尝试清空筛选条件或换一个关键词。</span></div>;
+  return <div className="table-shell"><table className="results-table"><thead><tr><th>名称</th><th>CN/ISSN</th>{yearColumns.map((year) => <th key={year}>{columnLabels[year]}</th>)}<th>状态</th></tr></thead><tbody>{rows.map(({ item }) => <tr key={item.id} className={`${item.status === "等级变化" ? "changed-row" : ""} ${item.type === "期刊" ? "row-clickable" : ""}`} tabIndex={item.type === "期刊" ? 0 : -1} onClick={() => item.type === "期刊" && onSelect(item)} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && item.type === "期刊") onSelect(item); }}><td className="name-cell"><strong>{item.name}</strong>{item.aliases.length > 0 && <small>{item.aliases.join(" · ")}</small>}</td><td>{item.issn || "\\"}</td>{yearColumns.map((year, index) => <td key={year}><Grade value={item.grades[year] || ""} special={index === yearColumns.length - 1} /></td>)}<td><span className={`status-label status-${item.status}`}>{item.status}</span></td></tr>)}</tbody></table></div>;
+}
