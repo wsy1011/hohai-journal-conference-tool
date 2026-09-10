@@ -4,6 +4,7 @@ output/
 outputs/
 .playwright-cli/
 .superpowers/
+docs/superpowers/
 *.log
 __pycache__/
 *.pyc
