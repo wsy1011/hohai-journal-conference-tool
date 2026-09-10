@@ -80,16 +80,24 @@ def parse_pdf(path: Path, year: int, discipline: str):
     return rows, failures
 
 
+def script_variant(name: str) -> str:
+    # 中文刊名条目与英文刊名条目视为两条独立记录。
+    return "zh" if re.search(r"[\u4e00-\u9fff]", name) else "latin"
+
+
 def key_for(item):
-    if item.get("forceNameKey"):
-        return f"name:{norm_name(item['name'])}"
-    code = item.get("issn", "/")
-    return f"code:{code}" if code and code != "/" else f"name:{norm_name(item['name'])}"
+    # 同一 ISSN 可能以中英文两个刊名分别列出（例如 Chinese Chemical Letters /
+    # 中国化学快报（英文版）），等级各按各自的条目；同一刊名的写法差异（大小写、
+    # 标点、"The" 等）仍归并到同一条记录。
+    code = clean(str(item.get("issn", "/"))) or "/"
+    if code != "/":
+        return f"code:{code}|{script_variant(item['name'])}"
+    return f"name:{norm_name(item['name'])}"
 
 
 def add_row(store, row):
     key = key_for(row)
-    if row.get("issn", "/") == "/" and not row.get("forceNameKey"):
+    if row.get("issn", "/") == "/":
         candidate = norm_name(row["name"])
         matches = [existing_key for existing_key, existing_item in store.items()
                    if candidate in {norm_name(n) for n in [existing_item["name"], *existing_item["aliases"]]}]
@@ -110,6 +118,31 @@ def add_row(store, row):
     item["sourcePages"][str(row["year"])] = row.get("sourcePage", "")
     if item["type"] == "期刊" and row["type"] != "期刊":
         item["type"] = row["type"]
+
+
+def propagate_single_variant_grade(store):
+    """某一年目录里只出现了一种刊名时，把该等级同步给同 ISSN 的另一条刊名记录。
+
+    例如 2026 年综合目录只列了「地质学报（英文版）」，那么同刊的英文记录也显示
+    2026 的等级；反之亦然。若某年两种刊名都列了（2024 年的大部分重复条目就是
+    这种情况），两条记录各自保留自己那一行的等级，不做合并。
+    """
+    by_code = {}
+    for item in store.values():
+        code = clean(str(item.get("issn", "/")))
+        if code and code != "/":
+            by_code.setdefault(code, []).append(item)
+    for group in by_code.values():
+        if len(group) < 2:
+            continue
+        for year in ("2022", "2024", "2026"):
+            values = {item["grades"][year] for item in group if item["grades"][year]}
+            if len(values) != 1:
+                continue
+            value = values.pop()
+            for item in group:
+                if not item["grades"][year]:
+                    item["grades"][year] = value
 
 
 def finalize(items):
@@ -135,33 +168,52 @@ def finalize(items):
     return sorted(items.values(), key=lambda item: item["name"].casefold())
 
 
-existing = json.loads((PUBLIC / "catalog.json").read_text(encoding="utf-8"))
+ROWS_FILE = ROOT / "catalog_rows.json"
+if not ROWS_FILE.exists():
+    raise SystemExit(
+        "缺少 catalog_rows.json：该文件不入库，需要先用 extract_catalogs.py 与 parse_catalogs.py "
+        "从本地原始目录 PDF 生成（或从备份恢复）后再运行 data:build；"
+        "public/data 下的三份 catalog-*.json 已是可直接使用的最终数据。"
+    )
+rows_catalog = json.loads(ROWS_FILE.read_text(encoding="utf-8"))
 datasets = {"natural": {}, "computer": {}, "social": {}}
 failures = []
 
-# Seed the normalized 2024/2026 natural and computer records first. This lets
-# legacy 2022 rows match the canonical journal title even when the PDF places
-# the publisher or institute name on the same visual line.
-for old in existing:
-    if old.get("grade2024") or old.get("grade2026General"):
-        seed = {"name": old["name"], "aliases": [], "issn": old.get("issn", "/"), "publisher": "", "type": old.get("type", "期刊"), "year": 2024, "grade": old.get("grade2024", ""), "sourcePage": old.get("sourcePages", {}).get("year2024", "")}
-        if seed["grade"]:
-            add_row(datasets["natural"], seed)
-        if old.get("grade2026General"):
-            add_row(datasets["natural"], {**seed, "year": 2026, "grade": old["grade2026General"], "sourcePage": old.get("sourcePages", {}).get("year2026General", "")})
-        for alias in old.get("aliases", []):
-            if re.search(r"[\u4e00-\u9fff]", alias) != re.search(r"[\u4e00-\u9fff]", old["name"]):
-                add_row(datasets["natural"], {**seed, "name": alias, "forceNameKey": True})
-                if old.get("grade2026General"):
-                    add_row(datasets["natural"], {**seed, "name": alias, "forceNameKey": True, "year": 2026, "grade": old["grade2026General"]})
-    if old.get("grade2026Computer"):
-        seed = {"name": old["name"], "aliases": [], "issn": old.get("issn", "/"), "publisher": "", "type": old.get("type", "期刊"), "year": 2026, "grade": old["grade2026Computer"], "sourcePage": old.get("sourcePages", {}).get("year2026Computer", "")}
+JOURNAL_NAME_RE = re.compile(r"journal|transactions|proceedings|magazine|letters|review|bulletin|学报|杂志|通报|评论", re.I)
+
+
+def row_type(row):
+    # 与 analyze_catalogs.item_type 一致：带 CN/ISSN 的按期刊处理，纯名称条目再按关键词判断。
+    if clean(str(row.get("code", "/"))) not in {"", "/"}:
+        return "期刊"
+    return "期刊" if JOURNAL_NAME_RE.search(row["name"]) else "会议"
+
+
+def row_seed(row, year):
+    return {"name": row["name"], "aliases": [], "issn": clean(str(row.get("code", "/"))) or "/",
+            "publisher": "", "type": row_type(row), "year": year,
+            "grade": row["grade"], "sourcePage": str(row.get("page", ""))}
+
+
+# Seed the 2024/2026 natural-science and computer records from the per-row parse
+# (catalog_rows.json) so each listed title keeps its own grade and page.
+rows_2024 = [row for row in rows_catalog if str(row.get("year")) == "2024"]
+rows_2026_general = [row for row in rows_catalog if row.get("section") == "2026综合目录"]
+rows_2026_computer = [row for row in rows_catalog if row.get("section") == "2026计算机专项目录"]
+
+for row in rows_2026_computer:
+    add_row(datasets["computer"], row_seed(row, 2026))
+for row in rows_2026_general:
+    add_row(datasets["natural"], row_seed(row, 2026))
+for row in rows_2024:
+    add_row(datasets["natural"], row_seed(row, 2024))
+# 计算机专项目录没有 2024 版，沿用 2024 自然科学综合目录里同 ISSN 的条目
+# （中英文刊名各自成一条记录）。
+computer_issns = {item["issn"] for item in datasets["computer"].values() if item["issn"] != "/"}
+for row in rows_2024:
+    seed = row_seed(row, 2024)
+    if seed["issn"] in computer_issns or key_for(seed) in datasets["computer"]:
         add_row(datasets["computer"], seed)
-        if old.get("grade2024"):
-            add_row(datasets["computer"], {**seed, "year": 2024, "grade": old["grade2024"], "sourcePage": old.get("sourcePages", {}).get("year2024", "")})
-        for alias in old.get("aliases", []):
-            if re.search(r"[\u4e00-\u9fff]", alias) != re.search(r"[\u4e00-\u9fff]", old["name"]):
-                add_row(datasets["computer"], {**seed, "name": alias, "forceNameKey": True})
 
 for (discipline, year), path in sorted(SOURCES.items(), key=lambda entry: -entry[0][1]):
     rows, errors = parse_pdf(path, year, discipline)
@@ -180,6 +232,7 @@ manifest = {
     "social": {"id": "social", "label": "人文社科", "yearColumns": ["2022", "2024", "2026"], "columnLabels": {"2022": "2022 等级", "2024": "2024 等级", "2026": "2026 等级"}, "note": "人文社科类目录，含期刊、会议及其他成果。"},
 }
 for discipline, store in datasets.items():
+    propagate_single_variant_grade(store)
     data = finalize(store)
     manifest[discipline]["count"] = len(data)
     (PUBLIC / f"catalog-{discipline}.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
