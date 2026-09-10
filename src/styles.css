@@ -96,7 +96,13 @@
 .metadata-grid>div{padding:12px;border:1px solid var(--line);background:#fafaf7;min-height:78px}
 .metadata-grid span{display:block;margin-bottom:8px;color:var(--muted);font-size:12px;line-height:1.5}
 .metadata-grid strong{display:block;font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+.metadata-grid small{display:block;margin-top:6px;color:var(--muted);font-size:11px;line-height:1.5}
 @media(max-width:600px){.metadata-grid{grid-template-columns:1fr}}
+.open-access>h4{margin:0 0 10px;font-size:13px;font-weight:650}
+.oa-grid{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0}
+.oa-grid strong{font-size:16px}
+.oa-note{margin:0;font-size:11px;line-height:1.6;color:var(--muted)}
+@media(max-width:800px){.oa-grid{grid-template-columns:1fr}}
 .impact-inline{margin:12px 0 16px;padding-bottom:14px;border-bottom:1px solid var(--line)}
 .impact-inline h3{margin:0 0 10px;font-size:13px}
 .impact-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px}
